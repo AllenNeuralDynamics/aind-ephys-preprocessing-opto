@@ -519,7 +519,7 @@ if __name__ == "__main__":
 
                 if not skip_processing:
                     # Remove optical stimulation artifacts
-                    if preprocessing_params["apply_remove_artifacts"]:
+                    if preprocessing_params["apply_remove_artifacts"] and recording.get_num_segments() == 1:
                         if ecephys_session_folder is not None and ecephys_session_folder.is_dir():
                             # Move to its own capsule for flexibility???
                             logging.info(f"\tRemoving optical stimulation artifacts")
@@ -659,37 +659,34 @@ if __name__ == "__main__":
                                             logging.info(f"\tCould not find behavior JSON file among: {json_file_names}")
 
                                 if len(stimulation_trigger_times) > 0:
-                                    if recording.get_num_segments() == 1:
-                                        # Build trigger events for every rising and falling stimulation edge
-                                        all_stimulation_trigger_times = []
-                                        for i, st in enumerate(stimulation_trigger_times):
-                                            pulse_duration = float(pulse_durations[i])
-                                            if inter_pulse_intervals is not None:
-                                                inter_pulse_interval = inter_pulse_intervals[i]
-                                            else:
-                                                assert pulse_frequencies is not None
-                                                inter_pulse_interval = 1 / float(pulse_frequencies[i])
-                                            if num_pulses is not None:
-                                                n_pulses = num_pulses[i]
-                                            else:
-                                                assert train_durations is not None
-                                                n_pulses = int(float(train_durations[i]) / inter_pulse_interval)
+                                    # Build trigger events for every rising and falling stimulation edge
+                                    all_stimulation_trigger_times = []
+                                    for i, st in enumerate(stimulation_trigger_times):
+                                        pulse_duration = float(pulse_durations[i])
+                                        if inter_pulse_intervals is not None:
+                                            inter_pulse_interval = inter_pulse_intervals[i]
+                                        else:
+                                            assert pulse_frequencies is not None
+                                            inter_pulse_interval = 1 / float(pulse_frequencies[i])
+                                        if num_pulses is not None:
+                                            n_pulses = num_pulses[i]
+                                        else:
+                                            assert train_durations is not None
+                                            n_pulses = int(float(train_durations[i]) / inter_pulse_interval)
 
-                                            for i in range(n_pulses):
-                                                all_stimulation_trigger_times.extend(
-                                                    [st + i * inter_pulse_interval, st + i * inter_pulse_interval + pulse_duration]
-                                                )
+                                        for i in range(n_pulses):
+                                            all_stimulation_trigger_times.extend(
+                                                [st + i * inter_pulse_interval, st + i * inter_pulse_interval + pulse_duration]
+                                            )
 
-                                        evt_triggers_sync = np.searchsorted(
-                                            recording_processed.get_times(),
-                                            all_stimulation_trigger_times,
-                                        )
-                                        triggers_edges = np.zeros(len(evt_triggers_sync), dtype=base_period_dtype)
-                                        triggers_edges["start_sample_index"] = evt_triggers_sync - samples_pre
-                                        triggers_edges["end_sample_index"] = evt_triggers_sync + samples_post
-                                        triggers_edges = _collapse_events(triggers_edges)
-                                    else:
-                                        logging.info("\t\tArtifact removal not supported for multi-segment recordings.")
+                                    evt_triggers_sync = np.searchsorted(
+                                        recording_processed.get_times(),
+                                        all_stimulation_trigger_times,
+                                    )
+                                    triggers_edges = np.zeros(len(evt_triggers_sync), dtype=base_period_dtype)
+                                    triggers_edges["start_sample_index"] = evt_triggers_sync - samples_pre
+                                    triggers_edges["end_sample_index"] = evt_triggers_sync + samples_post
+                                    triggers_edges = _collapse_events(triggers_edges)
 
                             if len(stimulation_trigger_times) == 0:
                                 # Source: NIDQ traces
@@ -709,6 +706,16 @@ if __name__ == "__main__":
                                 if nidq_file is not None:
                                     logging.info(f"\t\tFound NI-DAQ stream: {nidq_file.name}")
                                     recording_nidq = si.load(nidq_file)
+                                    # Select correct segment from recording name
+                                    if recording_nidq.get_num_segments() > 1:
+                                        recording_str = recording_name.split("_")[-1]
+                                        recording_index = recording_str.replace("recording", "")
+                                        if len(recording_index) > 0:
+                                            recording_index = int(recording_index) - 1
+                                        else:
+                                            recording_index = 0
+                                        logging.info(f"\t\tSelecting segment {recording_index} from recording {recording_name}")
+                                        recording_nidq = recording_nidq.select_segments(recording_index)
                                     if NIDQ_CHANNELS is None:
                                         logging.info(f"\t\tNIDQ_CHANNELS is not specified, using all available channels.")
                                         nidq_channels = list(recording_nidq.channel_ids)
@@ -763,6 +770,10 @@ if __name__ == "__main__":
                             else:
                                 logging.info(f"\tFound no optical stimulation artifacts")
                                 preprocessing_notes += f"\n- Found no optical stimulation artifacts.\n"
+                    else:
+                        if recording.get_num_segments() > 1:
+                            logging.info(f"\tSkipping optical artifact removal for recordings with multiple segments")
+                            preprocessing_notes += f"\n- Skipped optical artifact removal for recordings with multiple segments.\n"
 
                 # Proceed with motion correction and saving only if preprocessing succeeded,
                 # otherwise we skip directly to saving the raw recording and motion visualization (if possible)
