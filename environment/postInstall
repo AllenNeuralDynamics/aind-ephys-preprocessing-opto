@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -e
+
+# Install from SpikeInterface main with this fix: #4803
+pip install git+https://github.com/SpikeInterface/spikeinterface.git@93c612f51cca09ecafe2c23a283132cf0ad57869
