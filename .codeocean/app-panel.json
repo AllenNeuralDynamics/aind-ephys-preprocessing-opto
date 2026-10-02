@@ -52,7 +52,8 @@
 			"id": "WlTnqfGrOQ7M0M8O",
 			"name": "Max Bad Channel Fraction",
 			"type": "text",
-			"value_type": "number"
+			"value_type": "number",
+			"default_value": "0.5"
 		},
 		{
 			"id": "wKTswyKD1hKXcJsM",
@@ -71,6 +72,7 @@
 			"name": "Motion Preset",
 			"type": "list",
 			"value_type": "string",
+			"default_value": "dredge_fast",
 			"extra_data": [
 				"dredge",
 				"medicine",
@@ -101,9 +103,10 @@
 		},
 		{
 			"id": "6zhrKr3IYQxnxvGm",
-			"name": "Min Duration for Preprocessing (s)",
+			"name": "min duration for preprocessing (s)",
 			"type": "text",
-			"value_type": "number"
+			"value_type": "string",
+			"default_value": "-1"
 		},
 		{
 			"id": "OrlSs3mAdjkrF080",
@@ -115,13 +118,15 @@
 			"id": "r4pxbvVjeGdc6LV4",
 			"name": "Artifact Cutout (ms)",
 			"type": "text",
-			"value_type": "number"
+			"value_type": "number",
+			"default_value": "2"
 		},
 		{
 			"id": "pTgpU2Cg9ONSsfas",
 			"name": "N Jobs",
 			"type": "text",
-			"value_type": "number"
+			"value_type": "number",
+			"default_value": "-1"
 		}
 	]
 }

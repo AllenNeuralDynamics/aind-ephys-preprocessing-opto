@@ -779,7 +779,7 @@ def run() -> None:
                 # otherwise we skip directly to saving the raw recording and motion visualization (if possible)
                 if not skip_processing:
                     # Saving and motion correction are common to the "standard" and "custom" preprocessing pipelines
-                    logging.info(f"\tSaving preprocessed recording o binary")
+                    logging.info(f"\tSaving preprocessed recording to binary")
                     recording_bin = recording_processed.save(folder=preprocessing_output_folder)
 
                     # This is used to reload the binary traces downstream
