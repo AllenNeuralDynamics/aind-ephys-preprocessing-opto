@@ -1,0 +1,127 @@
+{
+	"version": 1,
+	"general": {
+		"title": "Preprocess Opto Ecephys"
+	},
+	"parameters": [
+		{
+			"id": "FPn9GYeHOuv1J4Hm",
+			"name": "Denoising",
+			"type": "list",
+			"value_type": "string",
+			"default_value": "cmr",
+			"extra_data": [
+				"cmr",
+				"destripe"
+			]
+		},
+		{
+			"id": "nyKO0GsOWyBlSrUH",
+			"name": "Filter Type",
+			"type": "list",
+			"value_type": "string",
+			"default_value": "highpass",
+			"extra_data": [
+				"highpass",
+				"bandpass"
+			]
+		},
+		{
+			"id": "cSarF2bWFAM5dosl",
+			"name": "Remove Out Channels",
+			"type": "list",
+			"value_type": "string",
+			"default_value": "true",
+			"extra_data": [
+				"false",
+				"true"
+			]
+		},
+		{
+			"id": "UXYh4CO1cVAbICaQ",
+			"name": "Remove Bad Channels",
+			"type": "list",
+			"value_type": "string",
+			"default_value": "true",
+			"extra_data": [
+				"false",
+				"true"
+			]
+		},
+		{
+			"id": "WlTnqfGrOQ7M0M8O",
+			"name": "Max Bad Channel Fraction",
+			"type": "text",
+			"value_type": "number"
+		},
+		{
+			"id": "wKTswyKD1hKXcJsM",
+			"name": "Motion Correction",
+			"type": "list",
+			"value_type": "string",
+			"default_value": "compute",
+			"extra_data": [
+				"skip",
+				"compute",
+				"apply"
+			]
+		},
+		{
+			"id": "MBfGie588ByriNg4",
+			"name": "Motion Preset",
+			"type": "list",
+			"value_type": "string",
+			"extra_data": [
+				"dredge",
+				"medicine",
+				"dredge_fast",
+				"nonrigid_accurate",
+				"nonrigid_fast_and_accurate",
+				"rigid_fast",
+				"kilosort_like"
+			]
+		},
+		{
+			"id": "fJJ0yG624mrpncVc",
+			"name": "Motion Temporal Bin (s)",
+			"type": "text",
+			"value_type": "number"
+		},
+		{
+			"id": "Luiv7MO81esRle1G",
+			"name": "T Start (s)",
+			"type": "text",
+			"value_type": "number"
+		},
+		{
+			"id": "ikgNoTbU58ZlCf77",
+			"name": "T Stop (s)",
+			"type": "text",
+			"value_type": "number"
+		},
+		{
+			"id": "6zhrKr3IYQxnxvGm",
+			"name": "Min Duration for Preprocessing (s)",
+			"type": "text",
+			"value_type": "number"
+		},
+		{
+			"id": "OrlSs3mAdjkrF080",
+			"name": "NI-DAQ Channels",
+			"type": "text",
+			"value_type": "string"
+		},
+		{
+			"id": "r4pxbvVjeGdc6LV4",
+			"name": "Artifact Cutout (ms)",
+			"type": "text",
+			"value_type": "number"
+		},
+		{
+			"id": "pTgpU2Cg9ONSsfas",
+			"name": "N Jobs",
+			"type": "text",
+			"value_type": "number"
+		}
+	]
+}

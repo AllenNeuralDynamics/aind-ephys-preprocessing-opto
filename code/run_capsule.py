@@ -169,7 +169,7 @@ def dump_to_json_or_pickle(recording, results_folder, base_name, relative_to):
         recording.dump_to_pickle(results_folder / f"{base_name}.pkl", relative_to=relative_to)
 
 
-if __name__ == "__main__":
+def run() -> None:
     args = parser.parse_args()
 
     PARAMS = args.params
