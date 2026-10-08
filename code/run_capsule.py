@@ -283,6 +283,8 @@ def run() -> None:
         if p.is_dir() and "ecephys" in p.name.lower() or "behavior" in p.name.lower() 
     ]
     ecephys_session_folder = None
+    if len(ecephys_session_folders) == 1:
+        ecephys_session_folder = ecephys_session_folders[0]
     logging.info(f"Running preprocessing with the following parameters:")
     if CUSTOM_PREPROCESSING_PIPELINE is None:
         logging.info(f"\tDENOISING_STRATEGY: {DENOISING_STRATEGY}")
@@ -519,7 +521,7 @@ def run() -> None:
 
                 if not skip_processing:
                     # Remove optical stimulation artifacts
-                    if preprocessing_params["apply_remove_artifacts"] and recording.get_num_segments() == 1:
+                    if preprocessing_params["apply_remove_artifacts"]:
                         if ecephys_session_folder is not None and ecephys_session_folder.is_dir():
                             # Move to its own capsule for flexibility???
                             logging.info(f"\tRemoving optical stimulation artifacts")
@@ -540,153 +542,157 @@ def run() -> None:
 
                             # If NIDQ_CHANNELS are specified, we use NIDQ
                             if NIDQ_CHANNELS is None:
-                                # Source 1: CSV opto file in Open Ephys folder
-                                ecephys_clipped_folders = [p for p in ecephys_session_folder.glob("**/ecephys_clipped")]
-                                if len(ecephys_clipped_folders) == 1:
-                                    ecephys_folder = ecephys_clipped_folders[0]
+                                if  recording.get_num_segments() > 1:
+                                    # Source 1: CSV opto file in Open Ephys folder
+                                    ecephys_clipped_folders = [p for p in ecephys_session_folder.glob("**/ecephys_clipped")]
+                                    if len(ecephys_clipped_folders) == 1:
+                                        ecephys_folder = ecephys_clipped_folders[0]
 
-                                    # load CSV events file
-                                    opto_csv_files = [
-                                        p
-                                        for p in ecephys_folder.iterdir()
-                                        if p.name.endswith("csv") and "opto" in p.name
-                                    ]
-                                    # TODO: if NIDQ channels is given use it
-                                    if len(opto_csv_files) == 1:
-                                        logging.info(f"\tFound opto CSV file. Trying to load artifacts...")
-                                        opto_csv_file = opto_csv_files[0]
-                                        opto_df = pd.read_csv(opto_csv_file)
+                                        # load CSV events file
+                                        opto_csv_files = [
+                                            p
+                                            for p in ecephys_folder.iterdir()
+                                            if p.name.endswith("csv") and "opto" in p.name
+                                        ]
+                                        # TODO: if NIDQ channels is given use it
+                                        if len(opto_csv_files) == 1:
+                                            logging.info(f"\tFound opto CSV file. Trying to load artifacts...")
+                                            opto_csv_file = opto_csv_files[0]
+                                            opto_df = pd.read_csv(opto_csv_file)
 
-                                        # durations are in ms, we need s
-                                        pulse_durations = opto_df["duration"] / 1000
-                                        num_pulses = opto_df["num_pulses"]
-                                        inter_pulse_intervals = opto_df["pulse_interval"] / 1000 + pulse_durations
+                                            # durations are in ms, we need s
+                                            pulse_durations = opto_df["duration"] / 1000
+                                            num_pulses = opto_df["num_pulses"]
+                                            inter_pulse_intervals = opto_df["pulse_interval"] / 1000 + pulse_durations
 
-                                        # read OE events
-                                        events = se.read_openephys_event(ecephys_folder, block_index=0)
-                                        evts = None
-                                        for segment_index in range(events.get_num_segments()):
-                                            evts_seg = events.get_events(
-                                                channel_id="PXIe-6341Digital Input Line",
-                                                segment_index=segment_index
-                                            )
-                                            if evts is None:
-                                                evts = evts_seg
-                                            else:
-                                                evts = np.concatenate([evts, evts_seg])
-
-                                        labels, counts = np.unique(evts["label"], return_counts=True)
-                                        (label_index,) = np.where(counts == len(opto_df))
-
-                                        if len(label_index) > 0:
-                                            evts_opto = evts[evts["label"] == labels[label_index]]
-                                            stimulation_trigger_times = evts_opto["time"]
-                                        else:
-                                            logging.info("\t\tCould not find an event channel with the right number of events!")
-                                    else:
-                                        logging.info(f"\tFound {len(opto_csv_files)} opto CSV files. One CSV file is required.")
-
-                                # Source 2: behavior JSON from HARP
-                                if len(stimulation_trigger_times) == 0:
-                                    behavior_folder = None
-                                    harp_folders = [p for p in ecephys_session_folder.glob("**/raw.harp")]
-                                    if len(harp_folders) == 1:
-                                        harp_folder = harp_folders[0]
-                                        behavior_folder = harp_folder.parent
-                                    elif len(harp_folders) == 0:
-                                        # this is for back-compatibility
-                                        harp_folders = [p for p in ecephys_session_folder.glob("**/HarpFolder")]
-                                        behavior_folders = [p for p in ecephys_session_folder.glob("**/TrainingFolder")]
-                                        if len(behavior_folders) == 1:
-                                            behavior_folder = behavior_folders[0]
-                                    if behavior_folder is not None:
-                                        logging.info(f"\tFound HARP behavior folder. Trying to load artifacts...")
-                                        json_files = [p for p in behavior_folder.iterdir() if p.suffix == ".json"]
-                                        behavior_json_file = None
-                                        if len(json_files) == 1:
-                                            behavior_json_file = json_file = json_files[0]
-                                        elif len(json_files) > 1:
-                                            logging.info(f"\t\tFound {len(json_files)} JSON files in behavior folder. Determining behavior file by name")
-                                            # the JSON file should start with {subject_id}_{date}
-                                            if session_name != "undefined":
-                                                subject_date_str = "_".join(session_name.split("_")[1:-1])
-                                                for json_file in json_files:
-                                                    if json_file.name.startswith(subject_date_str):
-                                                        behavior_json_file = json_file
-                                                        break
-                                        if behavior_json_file is not None:
-                                            with open(behavior_json_file) as f:
-                                                behavior_data = json.load(f)
-                                            laser_info = behavior_data.get("Opto_dialog", None)
-                                            optotagging_info = behavior_data.get("OpticalTagging_dialog", None)
-                                            stim_info = {}
-                                            if laser_info is not None:
-                                                stim_info.update(laser_info)
-                                            if optotagging_info is not None:
-                                                stim_info.update(optotagging_info)
-                                            stimulation_trigger_times = behavior_data.get("B_OptogeneticsTimeHarp", [])
-                                            if len(stim_info) > 0 and len(stimulation_trigger_times) > 0:
-                                                active_laser_ids = [
-                                                    k.split("_")[1]
-                                                    for k, v in stim_info.items()
-                                                    if "Laser_" in k and v != "NA" and "calibration" not in k
-                                                ]
-                                                active_laser_ids = sorted(list(set(active_laser_ids)))
-                                                logging.info(f"\t\tActive laser IDS: {active_laser_ids}")
-                                                laser_index = None
-                                                if len(active_laser_ids) > 1:
-                                                    logging.info(f"\t\tFound more than one active laser: {len(active_laser_ids)}. Selecting first one!")
-                                                    laser_index = 0
-                                                elif len(active_laser_ids) == 1:
-                                                    laser_index = 0
+                                            # read OE events
+                                            events = se.read_openephys_event(ecephys_folder, block_index=0)
+                                            evts = None
+                                            for segment_index in range(events.get_num_segments()):
+                                                evts_seg = events.get_events(
+                                                    channel_id="PXIe-6341Digital Input Line",
+                                                    segment_index=segment_index
+                                                )
+                                                if evts is None:
+                                                    evts = evts_seg
                                                 else:
-                                                    logging.info("\tNo active lasers found!")
-                                                    stimulation_trigger_times = []
-                                                if laser_index is not None:
-                                                    active_laser_id = active_laser_ids[laser_index]
-                                                    pulse_durations = behavior_data[f"TP_PulseDur_{active_laser_id}"]
-                                                    pulse_frequencies = behavior_data[f"TP_Frequency_{active_laser_id}"]
-                                                    train_durations = behavior_data[f"TP_Duration_{active_laser_id}"]
-                                                    if len(pulse_durations) != len(stimulation_trigger_times):
-                                                        logging.info(
-                                                            f"\t\tFound {len(stimulation_trigger_times)} stumulations, "
-                                                            f" but {len(pulse_durations)} pulse durations. "
-                                                            "Cannot estimate correct timing from HARP"
-                                                        )
+                                                    evts = np.concatenate([evts, evts_seg])
+
+                                            labels, counts = np.unique(evts["label"], return_counts=True)
+                                            (label_index,) = np.where(counts == len(opto_df))
+
+                                            if len(label_index) > 0:
+                                                evts_opto = evts[evts["label"] == labels[label_index]]
+                                                stimulation_trigger_times = evts_opto["time"]
+                                            else:
+                                                logging.info("\t\tCould not find an event channel with the right number of events!")
+                                        else:
+                                            logging.info(f"\tFound {len(opto_csv_files)} opto CSV files. One CSV file is required.")
+
+                                    # Source 2: behavior JSON from HARP
+                                    if len(stimulation_trigger_times) == 0:
+                                        behavior_folder = None
+                                        harp_folders = [p for p in ecephys_session_folder.glob("**/raw.harp")]
+                                        if len(harp_folders) == 1:
+                                            harp_folder = harp_folders[0]
+                                            behavior_folder = harp_folder.parent
+                                        elif len(harp_folders) == 0:
+                                            # this is for back-compatibility
+                                            harp_folders = [p for p in ecephys_session_folder.glob("**/HarpFolder")]
+                                            behavior_folders = [p for p in ecephys_session_folder.glob("**/TrainingFolder")]
+                                            if len(behavior_folders) == 1:
+                                                behavior_folder = behavior_folders[0]
+                                        if behavior_folder is not None:
+                                            logging.info(f"\tFound HARP behavior folder. Trying to load artifacts...")
+                                            json_files = [p for p in behavior_folder.iterdir() if p.suffix == ".json"]
+                                            behavior_json_file = None
+                                            if len(json_files) == 1:
+                                                behavior_json_file = json_file = json_files[0]
+                                            elif len(json_files) > 1:
+                                                logging.info(f"\t\tFound {len(json_files)} JSON files in behavior folder. Determining behavior file by name")
+                                                # the JSON file should start with {subject_id}_{date}
+                                                if session_name != "undefined":
+                                                    subject_date_str = "_".join(session_name.split("_")[1:-1])
+                                                    for json_file in json_files:
+                                                        if json_file.name.startswith(subject_date_str):
+                                                            behavior_json_file = json_file
+                                                            break
+                                            if behavior_json_file is not None:
+                                                with open(behavior_json_file) as f:
+                                                    behavior_data = json.load(f)
+                                                laser_info = behavior_data.get("Opto_dialog", None)
+                                                optotagging_info = behavior_data.get("OpticalTagging_dialog", None)
+                                                stim_info = {}
+                                                if laser_info is not None:
+                                                    stim_info.update(laser_info)
+                                                if optotagging_info is not None:
+                                                    stim_info.update(optotagging_info)
+                                                stimulation_trigger_times = behavior_data.get("B_OptogeneticsTimeHarp", [])
+                                                if len(stim_info) > 0 and len(stimulation_trigger_times) > 0:
+                                                    active_laser_ids = [
+                                                        k.split("_")[1]
+                                                        for k, v in stim_info.items()
+                                                        if "Laser_" in k and v != "NA" and "calibration" not in k
+                                                    ]
+                                                    active_laser_ids = sorted(list(set(active_laser_ids)))
+                                                    logging.info(f"\t\tActive laser IDS: {active_laser_ids}")
+                                                    laser_index = None
+                                                    if len(active_laser_ids) > 1:
+                                                        logging.info(f"\t\tFound more than one active laser: {len(active_laser_ids)}. Selecting first one!")
+                                                        laser_index = 0
+                                                    elif len(active_laser_ids) == 1:
+                                                        laser_index = 0
+                                                    else:
+                                                        logging.info("\tNo active lasers found!")
                                                         stimulation_trigger_times = []
-                                        else:
-                                            json_file_names = [f.name for f in json_files]
-                                            logging.info(f"\tCould not find behavior JSON file among: {json_file_names}")
+                                                    if laser_index is not None:
+                                                        active_laser_id = active_laser_ids[laser_index]
+                                                        pulse_durations = behavior_data[f"TP_PulseDur_{active_laser_id}"]
+                                                        pulse_frequencies = behavior_data[f"TP_Frequency_{active_laser_id}"]
+                                                        train_durations = behavior_data[f"TP_Duration_{active_laser_id}"]
+                                                        if len(pulse_durations) != len(stimulation_trigger_times):
+                                                            logging.info(
+                                                                f"\t\tFound {len(stimulation_trigger_times)} stumulations, "
+                                                                f" but {len(pulse_durations)} pulse durations. "
+                                                                "Cannot estimate correct timing from HARP"
+                                                            )
+                                                            stimulation_trigger_times = []
+                                            else:
+                                                json_file_names = [f.name for f in json_files]
+                                                logging.info(f"\tCould not find behavior JSON file among: {json_file_names}")
 
-                                if len(stimulation_trigger_times) > 0:
-                                    # Build trigger events for every rising and falling stimulation edge
-                                    all_stimulation_trigger_times = []
-                                    for i, st in enumerate(stimulation_trigger_times):
-                                        pulse_duration = float(pulse_durations[i])
-                                        if inter_pulse_intervals is not None:
-                                            inter_pulse_interval = inter_pulse_intervals[i]
-                                        else:
-                                            assert pulse_frequencies is not None
-                                            inter_pulse_interval = 1 / float(pulse_frequencies[i])
-                                        if num_pulses is not None:
-                                            n_pulses = num_pulses[i]
-                                        else:
-                                            assert train_durations is not None
-                                            n_pulses = int(float(train_durations[i]) / inter_pulse_interval)
+                                    if len(stimulation_trigger_times) > 0:
+                                        # Build trigger events for every rising and falling stimulation edge
+                                        all_stimulation_trigger_times = []
+                                        for i, st in enumerate(stimulation_trigger_times):
+                                            pulse_duration = float(pulse_durations[i])
+                                            if inter_pulse_intervals is not None:
+                                                inter_pulse_interval = inter_pulse_intervals[i]
+                                            else:
+                                                assert pulse_frequencies is not None
+                                                inter_pulse_interval = 1 / float(pulse_frequencies[i])
+                                            if num_pulses is not None:
+                                                n_pulses = num_pulses[i]
+                                            else:
+                                                assert train_durations is not None
+                                                n_pulses = int(float(train_durations[i]) / inter_pulse_interval)
 
-                                        for i in range(n_pulses):
-                                            all_stimulation_trigger_times.extend(
-                                                [st + i * inter_pulse_interval, st + i * inter_pulse_interval + pulse_duration]
-                                            )
+                                            for i in range(n_pulses):
+                                                all_stimulation_trigger_times.extend(
+                                                    [st + i * inter_pulse_interval, st + i * inter_pulse_interval + pulse_duration]
+                                                )
 
-                                    evt_triggers_sync = np.searchsorted(
-                                        recording_processed.get_times(),
-                                        all_stimulation_trigger_times,
-                                    )
-                                    triggers_edges = np.zeros(len(evt_triggers_sync), dtype=base_period_dtype)
-                                    triggers_edges["start_sample_index"] = evt_triggers_sync - samples_pre
-                                    triggers_edges["end_sample_index"] = evt_triggers_sync + samples_post
-                                    triggers_edges = _collapse_events(triggers_edges)
+                                        evt_triggers_sync = np.searchsorted(
+                                            recording_processed.get_times(),
+                                            all_stimulation_trigger_times,
+                                        )
+                                        triggers_edges = np.zeros(len(evt_triggers_sync), dtype=base_period_dtype)
+                                        triggers_edges["start_sample_index"] = evt_triggers_sync - samples_pre
+                                        triggers_edges["end_sample_index"] = evt_triggers_sync + samples_post
+                                        triggers_edges = _collapse_events(triggers_edges)
+                                else:
+                                    logging.info(f"\tSkipping optical artifact removal for recordings with multiple segments")
+                                    preprocessing_notes += f"\n- Skipped optical artifact removal for recordings with multiple segments.\n"
 
                             if len(stimulation_trigger_times) == 0:
                                 # Source: NIDQ traces
@@ -712,10 +718,11 @@ def run() -> None:
                                         recording_index = recording_str.replace("recording", "")
                                         if len(recording_index) > 0:
                                             recording_index = int(recording_index) - 1
+                                            logging.info(f"\t\tSelecting segment {recording_index} from recording {recording_name}")
+                                            recording_nidq = recording_nidq.select_segments(recording_index)
                                         else:
-                                            recording_index = 0
-                                        logging.info(f"\t\tSelecting segment {recording_index} from recording {recording_name}")
-                                        recording_nidq = recording_nidq.select_segments(recording_index)
+                                            logging.info(f"\t\tUsing multi-segment recording")
+                                        
                                     if NIDQ_CHANNELS is None:
                                         logging.info(f"\t\tNIDQ_CHANNELS is not specified, using all available channels.")
                                         nidq_channels = list(recording_nidq.channel_ids)
@@ -733,22 +740,28 @@ def run() -> None:
                                         )
                                         all_triggers.append(triggers)
                                     all_triggers = _collapse_events(np.concatenate(all_triggers))
-                                    start_times = recording_nidq.sample_index_to_time(all_triggers["start_sample_index"])
-                                    end_times = recording_nidq.sample_index_to_time(
-                                        np.clip(
-                                            all_triggers["end_sample_index"],
-                                            a_min=0,
-                                            a_max=recording_nidq.get_num_samples() - 1
-                                        )
-                                    )
-                                    recording_times = recording.get_times()
                                     triggers = all_triggers.copy()
-                                    triggers["start_sample_index"] = np.searchsorted(recording_times, start_times)
-                                    triggers["end_sample_index"] = np.searchsorted(recording_times, end_times)
 
+                                    for segment_index in np.unique(all_triggers["segment_index"]):
+                                        segment_mask = all_triggers["segment_index"] == segment_index
+                                        triggers_in_segment = all_triggers[segment_mask]
+                                        logging.info(f"\t\tFound {len(triggers_in_segment)} triggers in segment: {segment_index}")
+
+                                        start_sample_indices = triggers_in_segment["start_sample_index"]
+                                        start_times = recording_nidq.sample_index_to_time(start_sample_indices, segment_index=segment_index)
+                                        end_sample_indices = np.clip(
+                                            triggers_in_segment["end_sample_index"],
+                                            a_min=0,
+                                            a_max=recording_nidq.get_num_samples(segment_index=segment_index) - 1
+                                        )
+                                        end_times = recording_nidq.sample_index_to_time(end_sample_indices, segment_index=segment_index)
+                                        recording_times = recording.get_times(segment_index=segment_index)
+                                        triggers[segment_mask]["start_sample_index"] = np.searchsorted(recording_times, start_times)
+                                        triggers[segment_mask]["end_sample_index"] = np.searchsorted(recording_times, end_times)
+
+                                    # Convert to rising and falling edges blanking
                                     samples_pre = ms_to_samples(remove_artifact_params["ms_before"], recording.sampling_frequency)
                                     samples_post = ms_to_samples(remove_artifact_params["ms_after"], recording.sampling_frequency)
-
                                     triggers_edges = np.zeros(2 * len(triggers), dtype=triggers.dtype)
                                     for i, t in enumerate(triggers):
                                         triggers_edges[2 * i]["start_sample_index"] = t["start_sample_index"] - samples_pre
@@ -770,10 +783,10 @@ def run() -> None:
                             else:
                                 logging.info(f"\tFound no optical stimulation artifacts")
                                 preprocessing_notes += f"\n- Found no optical stimulation artifacts.\n"
-                    else:
-                        if recording.get_num_segments() > 1:
-                            logging.info(f"\tSkipping optical artifact removal for recordings with multiple segments")
-                            preprocessing_notes += f"\n- Skipped optical artifact removal for recordings with multiple segments.\n"
+                        else:
+                            logging.info("\tCould not find ecephys input folder")
+                        
+                            
 
                 # Proceed with motion correction and saving only if preprocessing succeeded,
                 # otherwise we skip directly to saving the raw recording and motion visualization (if possible)

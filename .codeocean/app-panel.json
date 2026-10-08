@@ -87,7 +87,8 @@
 			"id": "fJJ0yG624mrpncVc",
 			"name": "Motion Temporal Bin (s)",
 			"type": "text",
-			"value_type": "number"
+			"value_type": "string",
+			"default_value": "2"
 		},
 		{
 			"id": "Luiv7MO81esRle1G",
