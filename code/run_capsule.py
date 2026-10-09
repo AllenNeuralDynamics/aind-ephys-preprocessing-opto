@@ -768,6 +768,8 @@ def run() -> None:
                                         triggers_edges[2 * i]["end_sample_index"] = t["start_sample_index"] + samples_post
                                         triggers_edges[2 * i + 1]["start_sample_index"] = t["end_sample_index"] - samples_pre
                                         triggers_edges[2 * i + 1]["end_sample_index"] = t["end_sample_index"] + samples_post
+                                        triggers_edges[2 * i]["segment_index"] = t["segment_index"]
+                                        triggers_edges[2 * i + 1]["segment_index"] = t["segment_index"]
 
                                     triggers_edges = _collapse_events(triggers_edges)
 
