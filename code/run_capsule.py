@@ -756,8 +756,8 @@ def run() -> None:
                                         )
                                         end_times = recording_nidq.sample_index_to_time(end_sample_indices, segment_index=segment_index)
                                         recording_times = recording.get_times(segment_index=segment_index)
-                                        triggers[segment_mask]["start_sample_index"] = np.searchsorted(recording_times, start_times)
-                                        triggers[segment_mask]["end_sample_index"] = np.searchsorted(recording_times, end_times)
+                                        triggers["start_sample_index"][segment_mask] = np.searchsorted(recording_times, start_times)
+                                        triggers["end_sample_index"][segment_mask] = np.searchsorted(recording_times, end_times)
 
                                     # Convert to rising and falling edges blanking
                                     samples_pre = ms_to_samples(remove_artifact_params["ms_before"], recording.sampling_frequency)
