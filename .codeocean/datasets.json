@@ -2,8 +2,8 @@
 	"version": 1,
 	"attached_datasets": [
 		{
-			"id": "7af57b05-1663-467d-a659-d3d0fc07b1cb",
-			"mount": "ecephys_860083_2026-09-18_14-11-10"
+			"id": "febbf65d-7087-4b01-8b8c-ab2fcf800ed9",
+			"mount": "behavior_864896_2026-08-12_13-53-38"
 		}
 	]
 }

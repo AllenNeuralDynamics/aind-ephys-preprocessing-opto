@@ -6,7 +6,7 @@
 	"parameters": [
 		{
 			"id": "FPn9GYeHOuv1J4Hm",
-			"name": "Denoising",
+			"name": "denoising",
 			"type": "list",
 			"value_type": "string",
 			"default_value": "cmr",
@@ -17,7 +17,7 @@
 		},
 		{
 			"id": "nyKO0GsOWyBlSrUH",
-			"name": "Filter Type",
+			"name": "filter type",
 			"type": "list",
 			"value_type": "string",
 			"default_value": "highpass",
@@ -28,7 +28,7 @@
 		},
 		{
 			"id": "cSarF2bWFAM5dosl",
-			"name": "Remove Out Channels",
+			"name": "remove out channels",
 			"type": "list",
 			"value_type": "string",
 			"default_value": "true",
@@ -39,7 +39,7 @@
 		},
 		{
 			"id": "UXYh4CO1cVAbICaQ",
-			"name": "Remove Bad Channels",
+			"name": "remove bad channels",
 			"type": "list",
 			"value_type": "string",
 			"default_value": "true",
@@ -50,14 +50,14 @@
 		},
 		{
 			"id": "WlTnqfGrOQ7M0M8O",
-			"name": "Max Bad Channel Fraction",
+			"name": "max bad channel fraction",
 			"type": "text",
 			"value_type": "number",
 			"default_value": "0.5"
 		},
 		{
 			"id": "wKTswyKD1hKXcJsM",
-			"name": "Motion Correction",
+			"name": "motion correction",
 			"type": "list",
 			"value_type": "string",
 			"default_value": "compute",
@@ -69,7 +69,7 @@
 		},
 		{
 			"id": "MBfGie588ByriNg4",
-			"name": "Motion Preset",
+			"name": "motion preset",
 			"type": "list",
 			"value_type": "string",
 			"default_value": "dredge_fast",
@@ -85,20 +85,20 @@
 		},
 		{
 			"id": "fJJ0yG624mrpncVc",
-			"name": "Motion Temporal Bin (s)",
+			"name": "motion temporal bin (s)",
 			"type": "text",
 			"value_type": "string",
 			"default_value": "2"
 		},
 		{
 			"id": "Luiv7MO81esRle1G",
-			"name": "T Start (s)",
+			"name": "t start (s)",
 			"type": "text",
 			"value_type": "number"
 		},
 		{
 			"id": "ikgNoTbU58ZlCf77",
-			"name": "T Stop (s)",
+			"name": "t stop (s)",
 			"type": "text",
 			"value_type": "number"
 		},
@@ -111,20 +111,20 @@
 		},
 		{
 			"id": "OrlSs3mAdjkrF080",
-			"name": "NI-DAQ Channels",
+			"name": "NI-DAQ channels",
 			"type": "text",
 			"value_type": "string"
 		},
 		{
 			"id": "r4pxbvVjeGdc6LV4",
-			"name": "Artifact Cutout (ms)",
+			"name": "artifact cutout (ms)",
 			"type": "text",
 			"value_type": "number",
 			"default_value": "2"
 		},
 		{
 			"id": "pTgpU2Cg9ONSsfas",
-			"name": "N Jobs",
+			"name": "n jobs",
 			"type": "text",
 			"value_type": "number",
 			"default_value": "-1"

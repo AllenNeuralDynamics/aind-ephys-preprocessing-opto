@@ -216,7 +216,7 @@ def run() -> None:
         NIDQ_CHANNELS = args.static_nidq_channels or args.nidq_channels
         if NIDQ_CHANNELS is not None and NIDQ_CHANNELS == "":
             NIDQ_CHANNELS = None
-        ARTIFACT_CUTOUT_MS = args.static_min_duration_for_preprocessing or args.min_duration_for_preprocessing
+        ARTIFACT_CUTOUT_MS = args.static_artifact_cutout_ms or args.artifact_cutout_ms
         if isinstance(ARTIFACT_CUTOUT_MS, str) and ARTIFACT_CUTOUT_MS == "":
             ARTIFACT_CUTOUT_MS = None
         if ARTIFACT_CUTOUT_MS is not None:
@@ -542,7 +542,7 @@ def run() -> None:
 
                             # If NIDQ_CHANNELS are specified, we use NIDQ
                             if NIDQ_CHANNELS is None:
-                                if  recording.get_num_segments() > 1:
+                                if recording.get_num_segments() == 1:
                                     # Source 1: CSV opto file in Open Ephys folder
                                     ecephys_clipped_folders = [p for p in ecephys_session_folder.glob("**/ecephys_clipped")]
                                     if len(ecephys_clipped_folders) == 1:
