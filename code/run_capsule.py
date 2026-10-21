@@ -532,6 +532,9 @@ def run() -> None:
                             ms_after = ARTIFACT_CUTOUT_MS if ARTIFACT_CUTOUT_MS is not None else remove_artifact_params["ms_after"]
                             samples_pre = ms_to_samples(ms_before, recording.sampling_frequency)
                             samples_post = ms_to_samples(ms_after, recording.sampling_frequency)
+                            # Add to preprocessing params for provenance
+                            preprocessing_params["ms_before"] = ms_before
+                            preprocessing_params["ms_after"] = ms_after
 
                             # instantiate stimulation variables
                             pulse_durations = None
@@ -760,8 +763,6 @@ def run() -> None:
                                         triggers["end_sample_index"][segment_mask] = np.searchsorted(recording_times, end_times)
 
                                     # Convert to rising and falling edges blanking
-                                    samples_pre = ms_to_samples(remove_artifact_params["ms_before"], recording.sampling_frequency)
-                                    samples_post = ms_to_samples(remove_artifact_params["ms_after"], recording.sampling_frequency)
                                     triggers_edges = np.zeros(2 * len(triggers), dtype=triggers.dtype)
                                     for i, t in enumerate(triggers):
                                         triggers_edges[2 * i]["start_sample_index"] = t["start_sample_index"] - samples_pre
