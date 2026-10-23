@@ -531,8 +531,8 @@ def run() -> None:
                         remove_artifact_params = preprocessing_params["remove_artifacts"]
                         triggers_edges = []
                         stimulation_trigger_times = []
-                        ms_before = ARTIFACT_CUTOUT_MS if ARTIFACT_CUTOUT_MS is not None else remove_artifact_params["ms_before"]
-                        ms_after = ARTIFACT_CUTOUT_MS if ARTIFACT_CUTOUT_MS is not None else remove_artifact_params["ms_after"]
+                        ms_before = float(ARTIFACT_CUTOUT_MS) if ARTIFACT_CUTOUT_MS is not None else remove_artifact_params["ms_before"]
+                        ms_after = float(ARTIFACT_CUTOUT_MS) if ARTIFACT_CUTOUT_MS is not None else remove_artifact_params["ms_after"]
                         samples_pre = ms_to_samples(ms_before, recording.sampling_frequency)
                         samples_post = ms_to_samples(ms_after, recording.sampling_frequency)
                         # Add to preprocessing params for provenance
