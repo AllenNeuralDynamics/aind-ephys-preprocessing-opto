@@ -60,7 +60,6 @@
         },
         "interpolate_motion_kwargs": {}
     },
-    "apply_remove_artifacts": true,
     "remove_artifacts": {
         "ms_before": 1,
         "ms_after": 1,
