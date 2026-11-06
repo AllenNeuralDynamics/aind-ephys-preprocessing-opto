@@ -22,7 +22,6 @@ from datetime import datetime, timedelta
 
 # SPIKEINTERFACE
 import spikeinterface as si
-import spikeinterface.extractors as se
 import spikeinterface.preprocessing as spre
 from spikeinterface.core.base import base_period_dtype
 from spikeinterface.core.core_tools import check_json, ms_to_samples
@@ -46,6 +45,65 @@ PARAMS_FILE = Path("../params.json")
 motion_presets = spre.get_motion_presets()
 
 
+
+
+def read_openephys_ttl_events(openephys_folder, channel_name, experiment_index=0):
+    """
+    Read TTL events of one Open Ephys binary event channel, concatenated over the recordings of an experiment.
+
+    Reads the events/ folders directly (same output as `se.read_openephys_event(...).get_events()`, rising
+    edges only), so the GB-sized continuous/ timestamps are not needed (e.g., when only metadata is staged).
+    """
+    def by_number(folders, prefix):
+        return sorted(folders, key=lambda p: int(p.name.replace(prefix, "")))
+
+    record_node_folders = sorted(p for p in Path(openephys_folder).glob("Record Node*") if p.is_dir())
+    assert len(record_node_folders) > 0, f"No Record Node folder found in {openephys_folder}"
+    # with multiple Record Nodes, the first one has the events (like neo, which uses the first matching channel)
+    experiment_folders = by_number(record_node_folders[0].glob("experiment*"), "experiment")
+    experiment_folder = experiment_folders[experiment_index]
+
+    times, labels = [], []
+    for recording_folder in by_number(experiment_folder.glob("recording*"), "recording"):
+        with open(recording_folder / "structure.oebin") as f:
+            event_infos = json.load(f)["events"]
+        event_info = [e for e in event_infos if e["channel_name"] == channel_name]
+        assert len(event_info) == 1, f"Event channel {channel_name} not found in {recording_folder}"
+        event_info = event_info[0]
+        event_folder = recording_folder / "events" / event_info["folder_name"]
+
+        timestamps = np.load(event_folder / "timestamps.npy")
+        states_file = event_folder / "states.npy"  # v0.6+
+        if not states_file.is_file():
+            states_file = event_folder / "channel_states.npy"
+        states = np.load(states_file)
+        channels_file = event_folder / "channels.npy"  # older versions
+        event_labels = (np.load(channels_file) if channels_file.is_file() else states).astype("U")
+        # before v0.6 the timestamps are sample indices
+        if not (event_folder / "sample_numbers.npy").is_file():
+            timestamps = timestamps / event_info["sample_rate"]
+
+        # states are +channel for rising and -channel for falling edges: keep paired rising edges
+        rising_indices = []
+        for channel in np.unique(np.abs(states)):
+            rising = np.flatnonzero(states == channel)
+            falling = np.flatnonzero(states == -channel)
+            if rising.size > 0 and falling.size > 0:
+                if rising[0] > falling[0]:
+                    falling = falling[1:]
+                if rising.size > falling.size:
+                    rising = rising[:-1]
+                if len(rising) == len(falling):
+                    rising_indices.extend(rising)
+        rising_indices = np.sort(np.array(rising_indices, dtype=np.int64))
+        times.append(timestamps[rising_indices].astype("float64"))
+        labels.append(event_labels[rising_indices])
+
+    events = np.zeros(sum(len(t) for t in times), dtype=[("time", "float64"), ("label", "<U100")])
+    if len(times) > 0:
+        events["time"] = np.concatenate(times)
+        events["label"] = np.concatenate(labels)
+    return events
 
 
 def dump_to_json_or_pickle(recording, results_folder, base_name, relative_to):
@@ -408,18 +466,10 @@ def run() -> None:
                                         num_pulses = opto_df["num_pulses"]
                                         inter_pulse_intervals = opto_df["pulse_interval"] / 1000 + pulse_durations
 
-                                        # read OE events
-                                        events = se.read_openephys_event(ecephys_folder, block_index=0)
-                                        evts = None
-                                        for segment_index in range(events.get_num_segments()):
-                                            evts_seg = events.get_events(
-                                                channel_id="PXIe-6341Digital Input Line",
-                                                segment_index=segment_index
-                                            )
-                                            if evts is None:
-                                                evts = evts_seg
-                                            else:
-                                                evts = np.concatenate([evts, evts_seg])
+                                        # read OE events (directly from events/, continuous/ might not be staged)
+                                        evts = read_openephys_ttl_events(
+                                            ecephys_folder, channel_name="PXIe-6341Digital Input Line"
+                                        )
 
                                         labels, counts = np.unique(evts["label"], return_counts=True)
                                         (label_index,) = np.where(counts == len(opto_df))
