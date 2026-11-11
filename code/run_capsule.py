@@ -45,6 +45,26 @@ PARAMS_FILE = Path("../params.json")
 motion_presets = spre.get_motion_presets()
 
 
+def list_zarr_paths(bucket, prefix):
+    """List the *.zarr folders under s3://bucket/prefix, trying anonymous access first (like si.read_zarr)."""
+    import boto3
+    from botocore import UNSIGNED
+    from botocore.config import Config
+    from botocore.exceptions import ClientError, NoCredentialsError
+
+    errors = []
+    for config in (Config(signature_version=UNSIGNED), None):
+        try:
+            paginator = boto3.client("s3", config=config).get_paginator("list_objects_v2")
+            return sorted(
+                f"s3://{bucket}/{cp['Prefix'].rstrip('/')}"
+                for page in paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter="/")
+                for cp in page.get("CommonPrefixes", [])
+                if cp["Prefix"].rstrip("/").endswith(".zarr")
+            )
+        except (ClientError, NoCredentialsError) as e:
+            errors.append(e)
+    raise PermissionError(f"Cannot list s3://{bucket}/{prefix} anonymously or with credentials: {errors}")
 
 
 def read_openephys_ttl_events(openephys_folder, channel_name, experiment_index=0):
@@ -119,6 +139,8 @@ def run() -> None:
     with open(PARAMS_FILE, "r") as f:
         full_params = json.load(f)
     preprocessing_params = full_params["preprocessing"]
+    STREAMING = full_params.get("streaming", False)
+    REMOTE_PATH = full_params["job_dispatch"].get("remote_path", None)
     LOGGING = full_params.get("logging", None)
 
     CUSTOM_PREPROCESSING_PIPELINE = preprocessing_params.pop("custom_preprocessing_pipeline", None)
@@ -136,7 +158,7 @@ def run() -> None:
     MOTION_TEMPORAL_BIN_S = float(motion_params.pop("temporal_bin_s", 1))
     COMPUTE_MOTION = motion_params.pop("compute", True)
     APPLY_MOTION = motion_params.pop("apply", False)
-    NIDQ_CHANNELS = preprocessing_params.pop("nidq_channels", None) or None
+    ARTIFACT_NIDQ_CHANNELS = preprocessing_params.pop("artifact_nidq_channels", None) or None
     ARTIFACT_CUTOUT_MS = preprocessing_params.pop("artifact_cutout_ms", 2)
     ARTIFACT_CUTOUT_MS = float(ARTIFACT_CUTOUT_MS) if ARTIFACT_CUTOUT_MS not in (None, "") else None
     ARTIFACT_FREQ_MAX = preprocessing_params.pop("artifact_freq_max", 9000)
@@ -186,6 +208,11 @@ def run() -> None:
     ecephys_session_folder = None
     if len(ecephys_session_folders) == 1:
         ecephys_session_folder = ecephys_session_folders[0]
+        ecephys_folder = ecephys_session_folder / "ecephys"
+        if not (ecephys_folder / "ecephys_clipped").is_dir():
+            ecephys_folder = ecephys_session_folder  # old format, no ecephys/ subfolder
+        if not (ecephys_folder / "ecephys_clipped").is_dir():
+            raise FileNotFoundError(f"Clipped folder not found in {ecephys_folder}")
     logging.info(f"Running preprocessing with the following parameters:")
     if CUSTOM_PREPROCESSING_PIPELINE is None:
         logging.info(f"\tDENOISING_STRATEGY: {DENOISING_STRATEGY}")
@@ -202,8 +229,10 @@ def run() -> None:
     logging.info(f"\tT_START: {T_START}")
     logging.info(f"\tT_STOP: {T_STOP}")
     logging.info(f"\tMIN_DURATION FOR PREPROCESSING: {MIN_DURATION_FOR_PREPROCESSING}")
-    logging.info(f"\tNIDQ_CHANNELS: {NIDQ_CHANNELS}")
+    logging.info(f"\tARTIFACT_NIDQ_CHANNELS: {ARTIFACT_NIDQ_CHANNELS}")
     logging.info(f"\tARTIFACT_CUTOUT_MS: {ARTIFACT_CUTOUT_MS}")
+    logging.info(f"\tARTIFACT_FREQ_MAX: {ARTIFACT_FREQ_MAX}")
+    logging.info(f"\tARTIFACT_DETECT_THRESHOLD: {ARTIFACT_DETECT_THRESHOLD}")
     logging.info(f"\tN_JOBS: {N_JOBS}")
 
     data_process_prefix = "data_process_preprocessing"
@@ -441,18 +470,18 @@ def run() -> None:
                         num_pulses = None
                         inter_pulse_intervals = None
 
-                        # If NIDQ_CHANNELS are specified, we use NIDQ
-                        if NIDQ_CHANNELS is None:
+                        # If ARTIFACT_NIDQ_CHANNELS are specified, we use NIDQ
+                        if ARTIFACT_NIDQ_CHANNELS is None:
                             if recording.get_num_segments() == 1:
                                 # Source 1: CSV opto file in Open Ephys folder
                                 ecephys_clipped_folders = [p for p in ecephys_session_folder.glob("**/ecephys_clipped")]
                                 if len(ecephys_clipped_folders) == 1:
-                                    ecephys_folder = ecephys_clipped_folders[0]
+                                    ecephys_clipped_folder = ecephys_clipped_folders[0]
 
                                     # load CSV events file
                                     opto_csv_files = [
                                         p
-                                        for p in ecephys_folder.iterdir()
+                                        for p in ecephys_clipped_folder.iterdir()
                                         if p.name.endswith("csv") and "opto" in p.name
                                     ]
                                     # TODO: if NIDQ channels is given use it
@@ -468,7 +497,7 @@ def run() -> None:
 
                                         # read OE events (directly from events/, continuous/ might not be staged)
                                         evts = read_openephys_ttl_events(
-                                            ecephys_folder, channel_name="PXIe-6341Digital Input Line"
+                                            ecephys_clipped_folder, channel_name="PXIe-6341Digital Input Line"
                                         )
 
                                         labels, counts = np.unique(evts["label"], return_counts=True)
@@ -590,20 +619,39 @@ def run() -> None:
                         if len(stimulation_trigger_times) == 0:
                             # Source: NIDQ traces
                             logging.info(f"\tUsing NI-DAQ stream to detect artifacts")
-                            ecephys_compressed = ecephys_session_folder / "ecephys" / "ecephys_compressed"
                             experiment_node_str = recording_name.split("#")[0]
-                            nidq_stream = [
-                                p for p in ecephys_compressed.iterdir() if "NI-DAQ" in p.name and experiment_node_str in p.name
-                            ]
                             nidq_file = None
-                            if len(nidq_stream) == 0:
+
+                            # Handle remote path if specified
+                            if STREAMING:
+                                # REMOTE_PATH is s3://{bucket}/{session_name}; zarrs are in
+                                # {bucket}/{session_name}/ecephys/ecephys_compressed/{stream_name}.zarr
+                                assert REMOTE_PATH is not None, "remote_path is required in streaming mode"
+
+                                bucket, session_name = REMOTE_PATH.replace("s3://", "").strip("/").split("/")[:2]
+                                if ecephys_folder != ecephys_session_folder:
+                                    compressed_path = "ecephys/ecephys_compressed"
+                                else:
+                                    # old format, no ecephys/ subfolder
+                                    compressed_path = "ecephys_compressed"
+                                prefix = f"{session_name}/{compressed_path}/"
+                                zarr_paths = list_zarr_paths(bucket, prefix)
+                                nidq_streams = [p for p in zarr_paths if "NI-DAQ" in p and experiment_node_str in p]
+                                ecephys_compressed = f"{REMOTE_PATH}/{compressed_path}"
+                            else:
+                                ecephys_compressed = ecephys_folder / "ecephys_compressed"
+                                nidq_streams = [
+                                    p for p in ecephys_compressed.iterdir()
+                                    if "NI-DAQ" in p.name and experiment_node_str in p.name
+                                ]
+                            if len(nidq_streams) == 0:
                                 logging.info(f"\t\tCould not find NI-DAQ stream in: {ecephys_compressed}")
-                            elif len(nidq_stream) == 1:
-                                nidq_file = nidq_stream[0]
+                            elif len(nidq_streams) == 1:
+                                nidq_file = nidq_streams[0]
                             else:
                                 logging.info(f"\t\tFound multiple NI-DAQ streams in: {ecephys_compressed}")
                             if nidq_file is not None:
-                                logging.info(f"\t\tFound NI-DAQ stream: {nidq_file.name}")
+                                logging.info(f"\t\tFound NI-DAQ stream: {nidq_file}")
                                 recording_nidq = si.load(nidq_file)
                                 # Select correct segment from recording name
                                 if recording_nidq.get_num_segments() > 1:
@@ -616,11 +664,11 @@ def run() -> None:
                                     else:
                                         logging.info(f"\t\tUsing multi-segment recording")
                                     
-                                if NIDQ_CHANNELS is None:
-                                    logging.info(f"\t\tNIDQ_CHANNELS is not specified, using all available channels.")
+                                if ARTIFACT_NIDQ_CHANNELS is None:
+                                    logging.info(f"\t\tARTIFACT_NIDQ_CHANNELS is not specified, using all available channels.")
                                     nidq_channels = list(recording_nidq.channel_ids)
                                 else:
-                                    nidq_channels = NIDQ_CHANNELS.split(",")
+                                    nidq_channels = ARTIFACT_NIDQ_CHANNELS.split(",")
                                     logging.info(f"\t\tUsing NIDQ channels: {nidq_channels}")
                                 all_triggers = []
                                 for nidq_channel in nidq_channels:

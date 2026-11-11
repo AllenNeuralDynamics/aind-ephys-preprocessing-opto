@@ -33,7 +33,7 @@ A full list of parameters can be found in the `aind-ephys-pipeline` repository, 
 
 Additional parameters supported by the `aind-ephys-preprocessing-opto` process are:
 
-* "nidq_channels": "",  # Comma-separated list of NIDQ channels to use for optical artifact removal
+* "artifact_nidq_channels": "",  # Comma-separated list of NIDQ channels to use for optical artifact removal
 * "artifact_cutout_ms": 2  # Duration in milliseconds to cut out around optical artifacts
 * "artifact_freq_max": 9000  # Maximum frequency for low-pass filtering for envelope artifact detection
 * "artifact_detect_threshold": 30  # Threshold for detecting artifacts on envelope
