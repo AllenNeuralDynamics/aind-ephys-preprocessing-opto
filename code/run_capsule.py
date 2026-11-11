@@ -139,7 +139,7 @@ def run() -> None:
     with open(PARAMS_FILE, "r") as f:
         full_params = json.load(f)
     preprocessing_params = full_params["preprocessing"]
-    STREAMING = full_params.get("streaming", False)
+    STREAMING = full_params["job_dispatch"].get("streaming", False)
     REMOTE_PATH = full_params["job_dispatch"].get("remote_path", None)
     LOGGING = full_params.get("logging", None)
 
