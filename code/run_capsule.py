@@ -9,7 +9,6 @@ import os
 # and let spikeinterface handle parallelization
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 
-import argparse
 import sys
 import shutil
 import numpy as np
@@ -23,7 +22,6 @@ from datetime import datetime, timedelta
 
 # SPIKEINTERFACE
 import spikeinterface as si
-import spikeinterface.extractors as se
 import spikeinterface.preprocessing as spre
 from spikeinterface.core.base import base_period_dtype
 from spikeinterface.core.core_tools import check_json, ms_to_samples
@@ -42,124 +40,90 @@ VERSION = "1.0"
 data_folder = Path("../data/")
 scratch_folder = Path("../scratch/")
 results_folder = Path("../results/")
+PARAMS_FILE = Path("../params.json")
 
 motion_presets = spre.get_motion_presets()
 
-# define argument parser
-parser = argparse.ArgumentParser(description="Preprocess AIND Neurpixels data")
 
-# positional arguments
-denoising_group = parser.add_mutually_exclusive_group()
-denoising_help = "Which denoising strategy to use. Can be 'cmr' or 'destripe'"
-denoising_group.add_argument("--denoising", choices=["cmr", "destripe"], help=denoising_help)
-denoising_group.add_argument("static_denoising", nargs="?", default="cmr", help=denoising_help)
+def list_zarr_paths(bucket, prefix):
+    """List the *.zarr folders under s3://bucket/prefix, trying anonymous access first (like si.read_zarr)."""
+    import boto3
+    from botocore import UNSIGNED
+    from botocore.config import Config
+    from botocore.exceptions import ClientError, NoCredentialsError
 
-filter_group = parser.add_mutually_exclusive_group()
-filter_help = "Which filter to use. Can be 'highpass' or 'bandpass'"
-filter_group.add_argument("--filter-type", choices=["highpass", "bandpass"], help=filter_help)
-filter_group.add_argument("static_filter_type", nargs="?", default="highpass", help=filter_help)
+    errors = []
+    for config in (Config(signature_version=UNSIGNED), None):
+        try:
+            paginator = boto3.client("s3", config=config).get_paginator("list_objects_v2")
+            return sorted(
+                f"s3://{bucket}/{cp['Prefix'].rstrip('/')}"
+                for page in paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter="/")
+                for cp in page.get("CommonPrefixes", [])
+                if cp["Prefix"].rstrip("/").endswith(".zarr")
+            )
+        except (ClientError, NoCredentialsError) as e:
+            errors.append(e)
+    raise PermissionError(f"Cannot list s3://{bucket}/{prefix} anonymously or with credentials: {errors}")
 
-remove_out_channels_group = parser.add_mutually_exclusive_group()
-remove_out_channels_help = "Whether to remove out channels"
-remove_out_channels_group.add_argument("--no-remove-out-channels", action="store_true", help=remove_out_channels_help)
-remove_out_channels_group.add_argument(
-    "static_remove_out_channels", nargs="?", default="true", help=remove_out_channels_help
-)
 
-remove_bad_channels_group = parser.add_mutually_exclusive_group()
-remove_bad_channels_help = "Whether to remove bad channels"
-remove_bad_channels_group.add_argument("--no-remove-bad-channels", action="store_true", help=remove_bad_channels_help)
-remove_bad_channels_group.add_argument(
-    "static_remove_bad_channels", nargs="?", default="true", help=remove_bad_channels_help
-)
+def read_openephys_ttl_events(openephys_folder, channel_name, experiment_index=0):
+    """
+    Read TTL events of one Open Ephys binary event channel, concatenated over the recordings of an experiment.
 
-max_bad_channel_fraction_group = parser.add_mutually_exclusive_group()
-max_bad_channel_fraction_help = (
-    "Maximum fraction of bad channels to remove. If more than this fraction, processing is skipped"
-)
-max_bad_channel_fraction_group.add_argument(
-    "--max-bad-channel-fraction", default=0.5, help=max_bad_channel_fraction_help
-)
-max_bad_channel_fraction_group.add_argument(
-    "static_max_bad_channel_fraction", nargs="?", default=None, help=max_bad_channel_fraction_help
-)
+    Reads the events/ folders directly (same output as `se.read_openephys_event(...).get_events()`, rising
+    edges only), so the GB-sized continuous/ timestamps are not needed (e.g., when only metadata is staged).
+    """
+    def by_number(folders, prefix):
+        return sorted(folders, key=lambda p: int(p.name.replace(prefix, "")))
 
-motion_correction_group = parser.add_mutually_exclusive_group()
-motion_correction_help = "How to deal with motion correction. Can be 'skip', 'compute', or 'apply'"
-motion_correction_group.add_argument("--motion", choices=["skip", "compute", "apply"], help=motion_correction_help)
-motion_correction_group.add_argument("static_motion", nargs="?", default="compute", help=motion_correction_help)
+    record_node_folders = sorted(p for p in Path(openephys_folder).glob("Record Node*") if p.is_dir())
+    assert len(record_node_folders) > 0, f"No Record Node folder found in {openephys_folder}"
+    # with multiple Record Nodes, the first one has the events (like neo, which uses the first matching channel)
+    experiment_folders = by_number(record_node_folders[0].glob("experiment*"), "experiment")
+    experiment_folder = experiment_folders[experiment_index]
 
-motion_preset_group = parser.add_mutually_exclusive_group()
-motion_preset_help = (
-    f"What motion preset to use. Supported presets are: {', '.join(motion_presets)}."
-)
-motion_preset_group.add_argument(
-    "--motion-preset",
-    choices=motion_presets,
-    help=motion_preset_help,
-)
-motion_preset_group.add_argument("static_motion_preset", nargs="?", default=None, help=motion_preset_help)
+    times, labels = [], []
+    for recording_folder in by_number(experiment_folder.glob("recording*"), "recording"):
+        with open(recording_folder / "structure.oebin") as f:
+            event_infos = json.load(f)["events"]
+        event_info = [e for e in event_infos if e["channel_name"] == channel_name]
+        assert len(event_info) == 1, f"Event channel {channel_name} not found in {recording_folder}"
+        event_info = event_info[0]
+        event_folder = recording_folder / "events" / event_info["folder_name"]
 
-motion_temporal_bin_s_group = parser.add_mutually_exclusive_group()
-motion_temporal_bin_s_help = (
-    ""
-)
-motion_temporal_bin_s_group.add_argument(
-    "--motion-temporal-bin-s", default=1, help=motion_temporal_bin_s_help
-)
-motion_temporal_bin_s_group.add_argument(
-    "static_motion_temporal_bin_s", nargs="?", default=None, help=motion_temporal_bin_s_help
-)
+        timestamps = np.load(event_folder / "timestamps.npy")
+        states_file = event_folder / "states.npy"  # v0.6+
+        if not states_file.is_file():
+            states_file = event_folder / "channel_states.npy"
+        states = np.load(states_file)
+        channels_file = event_folder / "channels.npy"  # older versions
+        event_labels = (np.load(channels_file) if channels_file.is_file() else states).astype("U")
+        # before v0.6 the timestamps are sample indices
+        if not (event_folder / "sample_numbers.npy").is_file():
+            timestamps = timestamps / event_info["sample_rate"]
 
-t_start_group = parser.add_mutually_exclusive_group()
-t_start_help = (
-    "Start time of the recording in seconds (assumes recording starts at 0). "
-    "This parameter is ignored in case of multi-segment or multi-block recordings."
-    "Default is None (start of recording)"
-)
-t_start_group.add_argument("static_t_start", nargs="?", default=None, help=t_start_help)
-t_start_group.add_argument("--t-start", default=None, help=t_start_help)
+        # states are +channel for rising and -channel for falling edges: keep paired rising edges
+        rising_indices = []
+        for channel in np.unique(np.abs(states)):
+            rising = np.flatnonzero(states == channel)
+            falling = np.flatnonzero(states == -channel)
+            if rising.size > 0 and falling.size > 0:
+                if rising[0] > falling[0]:
+                    falling = falling[1:]
+                if rising.size > falling.size:
+                    rising = rising[:-1]
+                if len(rising) == len(falling):
+                    rising_indices.extend(rising)
+        rising_indices = np.sort(np.array(rising_indices, dtype=np.int64))
+        times.append(timestamps[rising_indices].astype("float64"))
+        labels.append(event_labels[rising_indices])
 
-t_stop_group = parser.add_mutually_exclusive_group()
-t_stop_help = (
-    "Stop time of the recording in seconds (assumes recording starts at 0). "
-    "This parameter is ignored in case of multi-segment or multi-block recordings."
-    "Default is None (end of recording)"
-)
-t_stop_group.add_argument("static_t_stop", nargs="?", default=None, help=t_stop_help)
-t_stop_group.add_argument("--t-stop", default=None, help=t_stop_help)
-
-min_duration_group = parser.add_mutually_exclusive_group()
-min_duration_help = (
-    "Minimum duration of a recording to be preprocessed."
-)
-min_duration_group.add_argument("static_min_duration_for_preprocessing", nargs="?", default=None, help=min_duration_help)
-min_duration_group.add_argument("--min-duration-for-preprocessing", default=None, help=min_duration_help)
-
-nidq_channels_group = parser.add_mutually_exclusive_group()
-nidq_channels_help = (
-    "NI-DAQ channels to be used for preprocessing, comma-separated. E.g. AI0,AI4"
-)
-nidq_channels_group.add_argument("static_nidq_channels", nargs="?", default=None, help=nidq_channels_help)
-nidq_channels_group.add_argument("--nidq-channels", default=None, help=nidq_channels_help)
-
-artifact_cutout_ms_group = parser.add_mutually_exclusive_group()
-artifact_cutout_ms_help = (
-    "Cut-out in ms before and after stimulation edge. Default 2"
-)
-artifact_cutout_ms_group.add_argument("static_artifact_cutout_ms", nargs="?", default=None, help=nidq_channels_help)
-artifact_cutout_ms_group.add_argument("--artifact-cutout-ms", default=None, help=nidq_channels_help)
-
-n_jobs_group = parser.add_mutually_exclusive_group()
-n_jobs_help = (
-    "Number of jobs to use for parallel processing. Default is -1 (all available cores). "
-    "It can also be a float between 0 and 1 to use a fraction of available cores"
-)
-n_jobs_group.add_argument("static_n_jobs", nargs="?", default=None, help=n_jobs_help)
-n_jobs_group.add_argument("--n-jobs", default="-1", help=n_jobs_help)
-
-parser.add_argument("--params", default=None, help="Path to the parameters file or JSON string. If given, it will override all other arguments.")
-
+    events = np.zeros(sum(len(t) for t in times), dtype=[("time", "float64"), ("label", "<U100")])
+    if len(times) > 0:
+        events["time"] = np.concatenate(times)
+        events["label"] = np.concatenate(labels)
+    return events
 
 
 def dump_to_json_or_pickle(recording, results_folder, base_name, relative_to):
@@ -170,79 +134,42 @@ def dump_to_json_or_pickle(recording, results_folder, base_name, relative_to):
 
 
 def run() -> None:
-    args = parser.parse_args()
+    if not PARAMS_FILE.is_file():
+        raise ValueError(f"Params file not found: {PARAMS_FILE}")
+    with open(PARAMS_FILE, "r") as f:
+        full_params = json.load(f)
+    preprocessing_params = full_params["preprocessing"]
+    STREAMING = full_params["job_dispatch"].get("streaming", False)
+    REMOTE_PATH = full_params["job_dispatch"].get("remote_path", None)
+    LOGGING = full_params.get("logging", None)
 
-    PARAMS = args.params
-    if PARAMS is not None:
-        try:
-            # Try to parse the JSON string first to avoid file name too long error
-            preprocessing_params = json.loads(PARAMS)
-        except json.JSONDecodeError:
-            if Path(PARAMS).is_file():
-                with open(PARAMS, "r") as f:
-                    preprocessing_params = json.load(f)
-            else:
-                raise ValueError(f"Invalid parameters: {PARAMS} is not a valid JSON string or file path")
-
-        CUSTOM_PREPROCESSING_PIPELINE = preprocessing_params.pop("custom_preprocessing_pipeline", None)
-        DENOISING_STRATEGY = preprocessing_params.pop("denoising_strategy", "cmr")
-        FILTER_TYPE = preprocessing_params.pop("filter_type", "highpass")
-        REMOVE_OUT_CHANNELS = preprocessing_params.pop("remove_out_channels", False)
-        REMOVE_BAD_CHANNELS = preprocessing_params.pop("remove_bad_channels", False)
-        MAX_BAD_CHANNEL_FRACTION = float(preprocessing_params.pop("max_bad_channel_fraction", 0.5))
-        MIN_DURATION_FOR_PREPROCESSING = preprocessing_params.pop("min_preprocessing_duration", 120)
-        motion_params = preprocessing_params.get("motion_correction", None)
-        MOTION_PRESET = motion_params.pop("preset", None)
-        MOTION_TEMPORAL_BIN_S = float(motion_params.pop("temporal_bin_s", 1))
-        COMPUTE_MOTION = motion_params.pop("compute", True)
-        APPLY_MOTION = motion_params.pop("apply", False)
-        NIDQ_CHANNELS = preprocessing_params.pop("nidq_channels", None)
-        ARTIFACT_CUTOUT_MS = preprocessing_params.pop("artifact_cutout_ms", None)
-    else:
-        with open("params.json", "r") as f:
-            preprocessing_params = json.load(f)
-        CUSTOM_PREPROCESSING_PIPELINE = None  # flexible preprocessing only available passing a params file or JSON string
-        DENOISING_STRATEGY = args.denoising or args.static_denoising
-        FILTER_TYPE = args.filter_type or args.static_filter_type
-        REMOVE_OUT_CHANNELS = False if args.no_remove_out_channels else args.static_remove_out_channels == "true"
-        REMOVE_BAD_CHANNELS = False if args.no_remove_bad_channels else args.static_remove_bad_channels == "true"
-        MAX_BAD_CHANNEL_FRACTION = float(args.static_max_bad_channel_fraction or args.max_bad_channel_fraction)
-        motion_arg = args.motion or args.static_motion
-        MOTION_PRESET = args.static_motion_preset or args.motion_preset
-        MOTION_TEMPORAL_BIN_S = float(args.static_motion_temporal_bin_s or args.motion_temporal_bin_s)
-        COMPUTE_MOTION = True if motion_arg != "skip" else False
-        APPLY_MOTION = True if motion_arg == "apply" else False
-        MIN_DURATION_FOR_PREPROCESSING = args.static_min_duration_for_preprocessing or args.min_duration_for_preprocessing
-        NIDQ_CHANNELS = args.static_nidq_channels or args.nidq_channels
-        if NIDQ_CHANNELS is not None and NIDQ_CHANNELS == "":
-            NIDQ_CHANNELS = None
-        ARTIFACT_CUTOUT_MS = args.static_artifact_cutout_ms or args.artifact_cutout_ms
-        if isinstance(ARTIFACT_CUTOUT_MS, str) and ARTIFACT_CUTOUT_MS == "":
-            ARTIFACT_CUTOUT_MS = None
-        if ARTIFACT_CUTOUT_MS is not None:
-            ARTIFACT_CUTOUT_MS = float(ARTIFACT_CUTOUT_MS)
-
-    LOGGING = preprocessing_params.get("logging", None)
+    CUSTOM_PREPROCESSING_PIPELINE = preprocessing_params.pop("custom_preprocessing_pipeline", None)
+    DENOISING_STRATEGY = preprocessing_params.pop("denoising_strategy", "cmr")
+    FILTER_TYPE = preprocessing_params.pop("filter_type", "highpass")
+    REMOVE_OUT_CHANNELS = preprocessing_params.pop("remove_out_channels", False)
+    REMOVE_BAD_CHANNELS = preprocessing_params.pop("remove_bad_channels", False)
+    MAX_BAD_CHANNEL_FRACTION = float(preprocessing_params.pop("max_bad_channel_fraction", 0.5))
+    MIN_DURATION_FOR_PREPROCESSING = preprocessing_params.pop("min_preprocessing_duration", 120)
+    T_START = preprocessing_params.pop("t_start", None)
+    T_STOP = preprocessing_params.pop("t_stop", None)
+    N_JOBS = preprocessing_params.pop("n_jobs", -1)
+    motion_params = preprocessing_params.get("motion_correction", None)
+    MOTION_PRESET = motion_params.pop("preset", None)
+    MOTION_TEMPORAL_BIN_S = float(motion_params.pop("temporal_bin_s", 1))
+    COMPUTE_MOTION = motion_params.pop("compute", True)
+    APPLY_MOTION = motion_params.pop("apply", False)
+    ARTIFACT_NIDQ_CHANNELS = preprocessing_params.pop("artifact_nidq_channels", None) or None
+    ARTIFACT_CUTOUT_MS = preprocessing_params.pop("artifact_cutout_ms", 2)
+    ARTIFACT_CUTOUT_MS = float(ARTIFACT_CUTOUT_MS) if ARTIFACT_CUTOUT_MS not in (None, "") else None
+    ARTIFACT_FREQ_MAX = preprocessing_params.pop("artifact_freq_max", 9000)
+    ARTIFACT_DETECT_THRESHOLD = preprocessing_params.pop("artifact_detect_threshold", 30)
 
     DEFAULT_PREPROCESSING_PIPELINE = preprocessing_params.pop("default_preprocessing_pipeline", None)
     assert DEFAULT_PREPROCESSING_PIPELINE is not None or CUSTOM_PREPROCESSING_PIPELINE is not None, (
         "At least one of default_preprocessing_pipeline or custom_preprocessing_pipeline must be provided "
         "in the parameters"
     )
-    if "remove_artifacts" not in preprocessing_params:
-        with open("params.json", "r") as f:
-            preprocessing_params_default = json.load(f)
-            preprocessing_params["remove_artifacts"] = preprocessing_params_default["remove_artifacts"]
-
-    T_START = args.static_t_start or args.t_start
-    if isinstance(T_START, str) and T_START == "":
-        T_START = None
-    T_STOP = args.static_t_stop or args.t_stop
-    if isinstance(T_STOP, str) and T_STOP == "":
-        T_STOP = None
-
-    N_JOBS = args.static_n_jobs or args.n_jobs
-    N_JOBS = int(N_JOBS) if not N_JOBS.startswith("0.") else float(N_JOBS)
+    N_JOBS = int(N_JOBS) if not str(N_JOBS).startswith("0.") else float(N_JOBS)
 
     # Use CO_CPUS/N_JOBS_EXT env variable if available
     N_JOBS_EXT = os.getenv("CO_CPUS") or os.getenv("N_JOBS_EXT")
@@ -258,15 +185,7 @@ def run() -> None:
             import log_schema
 
             pipeline_name = LOGGING.get("pipeline_name", "AIND Ephys Pipeline")
-            acquisition_name = LOGGING.get("acquisition_name", None)
-
-            if acquisition_name is None:
-                data_description_json = list(data_folder.glob("**/data_description.json"))
-                if len(data_description_json) > 0:
-                    data_description_json = data_description_json[0]
-                    with open(data_description_json, "r") as f:
-                        data_description = json.load(f)
-                    acquisition_name = data_description["name"]
+            acquisition_name = LOGGING.get("acquisition_name", "unknown")
 
             config = LOGGING.get("logging_cfg")
             if config is not None and len(config) == 0:
@@ -289,6 +208,11 @@ def run() -> None:
     ecephys_session_folder = None
     if len(ecephys_session_folders) == 1:
         ecephys_session_folder = ecephys_session_folders[0]
+        ecephys_folder = ecephys_session_folder / "ecephys"
+        if not (ecephys_folder / "ecephys_clipped").is_dir():
+            ecephys_folder = ecephys_session_folder  # old format, no ecephys/ subfolder
+        if not (ecephys_folder / "ecephys_clipped").is_dir():
+            raise FileNotFoundError(f"Clipped folder not found in {ecephys_folder}")
     logging.info(f"Running preprocessing with the following parameters:")
     if CUSTOM_PREPROCESSING_PIPELINE is None:
         logging.info(f"\tDENOISING_STRATEGY: {DENOISING_STRATEGY}")
@@ -305,8 +229,10 @@ def run() -> None:
     logging.info(f"\tT_START: {T_START}")
     logging.info(f"\tT_STOP: {T_STOP}")
     logging.info(f"\tMIN_DURATION FOR PREPROCESSING: {MIN_DURATION_FOR_PREPROCESSING}")
-    logging.info(f"\tNIDQ_CHANNELS: {NIDQ_CHANNELS}")
+    logging.info(f"\tARTIFACT_NIDQ_CHANNELS: {ARTIFACT_NIDQ_CHANNELS}")
     logging.info(f"\tARTIFACT_CUTOUT_MS: {ARTIFACT_CUTOUT_MS}")
+    logging.info(f"\tARTIFACT_FREQ_MAX: {ARTIFACT_FREQ_MAX}")
+    logging.info(f"\tARTIFACT_DETECT_THRESHOLD: {ARTIFACT_DETECT_THRESHOLD}")
     logging.info(f"\tN_JOBS: {N_JOBS}")
 
     data_process_prefix = "data_process_preprocessing"
@@ -528,11 +454,9 @@ def run() -> None:
                     if ecephys_session_folder is not None and ecephys_session_folder.is_dir():
                         # Move to its own capsule for flexibility???
                         logging.info(f"\tRemoving optical stimulation artifacts")
-                        remove_artifact_params = preprocessing_params["remove_artifacts"]
                         triggers_edges = []
                         stimulation_trigger_times = []
-                        ms_before = float(ARTIFACT_CUTOUT_MS) if ARTIFACT_CUTOUT_MS is not None else remove_artifact_params["ms_before"]
-                        ms_after = float(ARTIFACT_CUTOUT_MS) if ARTIFACT_CUTOUT_MS is not None else remove_artifact_params["ms_after"]
+                        ms_before = ms_after = float(ARTIFACT_CUTOUT_MS)
                         samples_pre = ms_to_samples(ms_before, recording.sampling_frequency)
                         samples_post = ms_to_samples(ms_after, recording.sampling_frequency)
                         # Add to preprocessing params for provenance
@@ -546,18 +470,18 @@ def run() -> None:
                         num_pulses = None
                         inter_pulse_intervals = None
 
-                        # If NIDQ_CHANNELS are specified, we use NIDQ
-                        if NIDQ_CHANNELS is None:
+                        # If ARTIFACT_NIDQ_CHANNELS are specified, we use NIDQ
+                        if ARTIFACT_NIDQ_CHANNELS is None:
                             if recording.get_num_segments() == 1:
                                 # Source 1: CSV opto file in Open Ephys folder
                                 ecephys_clipped_folders = [p for p in ecephys_session_folder.glob("**/ecephys_clipped")]
                                 if len(ecephys_clipped_folders) == 1:
-                                    ecephys_folder = ecephys_clipped_folders[0]
+                                    ecephys_clipped_folder = ecephys_clipped_folders[0]
 
                                     # load CSV events file
                                     opto_csv_files = [
                                         p
-                                        for p in ecephys_folder.iterdir()
+                                        for p in ecephys_clipped_folder.iterdir()
                                         if p.name.endswith("csv") and "opto" in p.name
                                     ]
                                     # TODO: if NIDQ channels is given use it
@@ -571,18 +495,10 @@ def run() -> None:
                                         num_pulses = opto_df["num_pulses"]
                                         inter_pulse_intervals = opto_df["pulse_interval"] / 1000 + pulse_durations
 
-                                        # read OE events
-                                        events = se.read_openephys_event(ecephys_folder, block_index=0)
-                                        evts = None
-                                        for segment_index in range(events.get_num_segments()):
-                                            evts_seg = events.get_events(
-                                                channel_id="PXIe-6341Digital Input Line",
-                                                segment_index=segment_index
-                                            )
-                                            if evts is None:
-                                                evts = evts_seg
-                                            else:
-                                                evts = np.concatenate([evts, evts_seg])
+                                        # read OE events (directly from events/, continuous/ might not be staged)
+                                        evts = read_openephys_ttl_events(
+                                            ecephys_clipped_folder, channel_name="PXIe-6341Digital Input Line"
+                                        )
 
                                         labels, counts = np.unique(evts["label"], return_counts=True)
                                         (label_index,) = np.where(counts == len(opto_df))
@@ -703,20 +619,39 @@ def run() -> None:
                         if len(stimulation_trigger_times) == 0:
                             # Source: NIDQ traces
                             logging.info(f"\tUsing NI-DAQ stream to detect artifacts")
-                            ecephys_compressed = ecephys_session_folder / "ecephys" / "ecephys_compressed"
                             experiment_node_str = recording_name.split("#")[0]
-                            nidq_stream = [
-                                p for p in ecephys_compressed.iterdir() if "NI-DAQ" in p.name and experiment_node_str in p.name
-                            ]
                             nidq_file = None
-                            if len(nidq_stream) == 0:
+
+                            # Handle remote path if specified
+                            if STREAMING:
+                                # REMOTE_PATH is s3://{bucket}/{session_name}; zarrs are in
+                                # {bucket}/{session_name}/ecephys/ecephys_compressed/{stream_name}.zarr
+                                assert REMOTE_PATH is not None, "remote_path is required in streaming mode"
+
+                                bucket, session_name = REMOTE_PATH.replace("s3://", "").strip("/").split("/")[:2]
+                                if ecephys_folder != ecephys_session_folder:
+                                    compressed_path = "ecephys/ecephys_compressed"
+                                else:
+                                    # old format, no ecephys/ subfolder
+                                    compressed_path = "ecephys_compressed"
+                                prefix = f"{session_name}/{compressed_path}/"
+                                zarr_paths = list_zarr_paths(bucket, prefix)
+                                nidq_streams = [p for p in zarr_paths if "NI-DAQ" in p and experiment_node_str in p]
+                                ecephys_compressed = f"{REMOTE_PATH}/{compressed_path}"
+                            else:
+                                ecephys_compressed = ecephys_folder / "ecephys_compressed"
+                                nidq_streams = [
+                                    p for p in ecephys_compressed.iterdir()
+                                    if "NI-DAQ" in p.name and experiment_node_str in p.name
+                                ]
+                            if len(nidq_streams) == 0:
                                 logging.info(f"\t\tCould not find NI-DAQ stream in: {ecephys_compressed}")
-                            elif len(nidq_stream) == 1:
-                                nidq_file = nidq_stream[0]
+                            elif len(nidq_streams) == 1:
+                                nidq_file = nidq_streams[0]
                             else:
                                 logging.info(f"\t\tFound multiple NI-DAQ streams in: {ecephys_compressed}")
                             if nidq_file is not None:
-                                logging.info(f"\t\tFound NI-DAQ stream: {nidq_file.name}")
+                                logging.info(f"\t\tFound NI-DAQ stream: {nidq_file}")
                                 recording_nidq = si.load(nidq_file)
                                 # Select correct segment from recording name
                                 if recording_nidq.get_num_segments() > 1:
@@ -729,11 +664,14 @@ def run() -> None:
                                     else:
                                         logging.info(f"\t\tUsing multi-segment recording")
                                     
-                                if NIDQ_CHANNELS is None:
-                                    logging.info(f"\t\tNIDQ_CHANNELS is not specified, using all available channels.")
+                                if ARTIFACT_NIDQ_CHANNELS is None:
+                                    logging.info(f"\t\tARTIFACT_NIDQ_CHANNELS is not specified, using all available channels.")
+                                    nidq_channels = list(recording_nidq.channel_ids)
+                                elif ARTIFACT_NIDQ_CHANNELS == "all":
+                                    logging.info(f"\t\tARTIFACT_NIDQ_CHANNELS is set to 'all', using all available channels.")
                                     nidq_channels = list(recording_nidq.channel_ids)
                                 else:
-                                    nidq_channels = NIDQ_CHANNELS.split(",")
+                                    nidq_channels = ARTIFACT_NIDQ_CHANNELS.split(",")
                                     logging.info(f"\t\tUsing NIDQ channels: {nidq_channels}")
                                 all_triggers = []
                                 for nidq_channel in nidq_channels:
@@ -741,8 +679,8 @@ def run() -> None:
                                     recording_nidq_sel = recording_nidq.select_channels([nidq_channel])
                                     triggers = spre.detect_artifact_periods_by_envelope(
                                         recording_nidq_sel,
-                                        freq_max=remove_artifact_params["freq_max"],
-                                        detect_threshold=remove_artifact_params["detect_threshold"],
+                                        freq_max=ARTIFACT_FREQ_MAX,
+                                        detect_threshold=ARTIFACT_DETECT_THRESHOLD,
                                     )
                                     all_triggers.append(triggers)
                                 all_triggers = _collapse_events(np.concatenate(all_triggers))
