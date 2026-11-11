@@ -664,7 +664,7 @@ def run() -> None:
                                     else:
                                         logging.info(f"\t\tUsing multi-segment recording")
                                     
-                                if ARTIFACT_NIDQ_CHANNELS is None:
+                                if ARTIFACT_NIDQ_CHANNELS is None or ARTIFACT_NIDQ_CHANNELS == "all":
                                     logging.info(f"\t\tARTIFACT_NIDQ_CHANNELS is not specified, using all available channels.")
                                     nidq_channels = list(recording_nidq.channel_ids)
                                 else:
