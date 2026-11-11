@@ -137,7 +137,7 @@ def run() -> None:
     COMPUTE_MOTION = motion_params.pop("compute", True)
     APPLY_MOTION = motion_params.pop("apply", False)
     NIDQ_CHANNELS = preprocessing_params.pop("nidq_channels", None) or None
-    ARTIFACT_CUTOUT_MS = preprocessing_params.pop("artifact_cutout_ms", None)
+    ARTIFACT_CUTOUT_MS = preprocessing_params.pop("artifact_cutout_ms", 2)
     ARTIFACT_CUTOUT_MS = float(ARTIFACT_CUTOUT_MS) if ARTIFACT_CUTOUT_MS not in (None, "") else None
     ARTIFACT_FREQ_MAX = preprocessing_params.pop("artifact_freq_max", 9000)
     ARTIFACT_DETECT_THRESHOLD = preprocessing_params.pop("artifact_detect_threshold", 30)
